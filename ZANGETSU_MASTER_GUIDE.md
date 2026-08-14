@@ -1745,6 +1745,51 @@ pl005's `atk_hi_chain` is a **pure jump hub** — its only exits are `jump_sp_at
 **Real cause.** **73 of the game's 78 latch targets have no tcmb node.** An `AutoCombo` node that nothing points at is *globally* eligible and fires off any `ComboStart` in the moveset.
 **Fix.** `sp2_v15_autocombo.py` undid the addition.
 
+#### ★★★★★ The rev walk: 27 builds, and the cause was six fields nobody read
+
+**Symptom.** Reverse-form walk skipped instead of looping, and kept playing 1–2 s after the stick
+was released with input locked in the tail. Base and evo clean; every other character's rev clean.
+
+**Wrong hypotheses, all eliminated IN GAME.** The act, the motion field, the clip, the blend set,
+the `BLEND_` act, the walk tadj entry (replaced *and* deleted), the model (rev was given base's
+own model and stayed broken), scale, `ura_transform_mothod`, `MotionMoveRate`, `walk_speed` /
+`rev_walk_speed` (they are the **L2-stance** walk), `rev_run_speed`, motblend `frame_end`, the
+motblend `accessN` index, the container entry names, the dead `en011`/`en007` weapon-clip
+references, the weapon tracks, the target lists, the tcmbpkg and the tadjpkg.
+
+**Real cause.** Every `act_data` blob ends, *after* its target blocks, with the action's own
+playback parameters — `start_frame`, `end_frame`, `play_frame`, `fusion_frame`, `is_loop`,
+`is_motexpand`. Nobody had ever read them.
+
+* Rev's `run_in/loop/out` play the **same `blend_run`** base plays (sp000's 160-frame run clips)
+  but carried the **en028 donor's** frame ranges — 0/30, 30/60, 60/-1 against base's 0/40, 40/100,
+  130/-1. Windowing a shared clip with someone else's numbers. ⇒ the skipping. It is also why
+  handing base pl052's run acts broke *base*: pl052's ranges (0/20, 20/80, 80/-1) are equally
+  wrong for sp000's clip.
+* Rev's `ntrl_in` had `fusion_frame` **40** where base, evo and pl052 all use **30**.
+  `fusion_frame` is the cross-fade on entering an action, and the "walking in place" was proved in
+  game to *be* `3_rev_ntrl_rev_ntrl_in`. ⇒ the moonwalk.
+
+**Fix.** `Zangetsu Patch/rev_actparams_v27.py` — four acts, nothing else.
+
+**★★★ Rule.** When a ported form's action plays a **shared** blend set or clip, its
+`start_frame`/`end_frame` must match the form whose clip it actually plays, **not** the donor the
+act was copied from. Audit `start/end/play/fusion/is_loop` on every transplanted act.
+
+**★★★ Method lesson — this entry's own Barragan rule is what cracked it.** Seventeen builds of
+field-by-field comparison found nothing, because every layer *was* byte-identical to a working
+reference. Byte-copying pl052's three action files onto pl005 made rev clean in **one** test, and
+restoring pl005's files one at a time (then chunks of the tactpkg, then single acts) walked
+straight to the run acts. `tact_chunk_swap.py` does the chunk substitution and is reusable.
+
+**★★★ Method lesson — how to read a locomotion probe.** All walks look alike, so "no visible
+change" is unreadable; thirteen builds edited a **dead node** without knowing it. Tag candidates
+with violently non-walk clips (`rev_walk_whichact_v10.py`), always include a positive control that
+fires with no input, and freeze the animation to a static pose when you need to separate "the clip
+restarts" from "the action restarts". That probe also established that the tadj **`motion`** field,
+not the entry name, is the resolution key — pl005's rev walk declared `motion=walk`, so it had been
+falling back to `1_normal_move_walk` the whole time.
+
 #### The v1 walk transplant: base wrong, evo perfect
 
 **Symptom.** After v1, the base-form walk was still wrong while the evo-form walk looked flawless.
@@ -3059,16 +3104,57 @@ rare — pl019 has a 6, pl027 a 5, pl002 a 99 on his `sp_break03_evo`.
 
 | form | entry | block | shipped | now |
 |---|---|---|---|---|
-| base | `1_normal_attack_sp_break01_1` | 1 `Attack_Melee` | 2 | **3** (3/4) |
-| evo | `2_evo_ct_evo_ct_sp_break01` | 3 `Attack_Bullet` | 3 | **1** (1/2) |
-| evo | `2_evo_ct_evo_ct_sp_break02` | 7 `Attack_Melee` | 4 | **1** (1/2) |
-| rev | `3_rev_ct_rev_ct_sp_break01` | 3 `Attack_Melee` | 4 | **4** (4/5) |
-| rev | `3_rev_attack_rev_sp_break01_1` | 3 `Attack_Bullet` | 2 | **4** (4/5) |
+| base | `1_normal_attack_sp_break01_1` | 1 `Attack_Melee` | 2 | **3** (3/4) — LIVE |
+| evo | `2_evo_attack_evo_sp_break01_1` | 1 `Attack_Melee` | *(absent)* | **1** (1/2) — LIVE, created below |
+| rev | `3_rev_attack_rev_sp_break01_1` | 3 `Attack_Bullet` | 2 | **4** (4/5) — LIVE |
+| evo | `2_evo_ct_evo_ct_sp_break01` | 3 `Attack_Bullet` | 3 | 1 — dead data |
+| evo | `2_evo_ct_evo_ct_sp_break02` | 7 `Attack_Melee` | 4 | 1 — dead data |
+| rev | `3_rev_ct_rev_ct_sp_break01` | 3 `Attack_Melee` | 4 | 4 — dead data |
 
 ★ **pl005's base kikon is `1_normal_attack_sp_break01_1`, not `1_normal_ct_ct_sp_break01`.** Most of
 the roster puts base soul damage on the `ct` action; pl015 (Halibel), which is where pl005's base
 kikon was grafted from, puts it on the `attack` action. Searching for the `ct_` name finds nothing
 and looks like the field is missing.
+
+
+#### ★★ Which action a form actually runs — and the fallback that hides it
+
+Setting those numbers was not enough: evo still read **3/4**, base's value. The reason is worth
+more than the fix.
+
+**The `.tcmbpkg` combo graph is form-agnostic.** On pl000, pl001, pl004, pl005 and pl052 alike the
+kikon chain is named with bare nodes — `start_sp_break → sp_break01_charge → sp_break01_loop →
+sp_break01_maxout → sp_break01_1` — with no `evo_`/`rev_` anywhere. **The engine adds the form
+prefix itself** and resolves the node inside the current form's tadj category:
+
+```
+base   node sp_break01_1  ->  1_normal\attack + sp_break01_1      -> 1_normal_attack_sp_break01_1
+evo                       ->  2_evo\attack    + evo_sp_break01_1  -> 2_evo_attack_evo_sp_break01_1
+rev                       ->  3_rev\attack    + rev_sp_break01_1  -> 3_rev_attack_rev_sp_break01_1
+```
+
+⚠ **When the form's entry is missing, the engine falls back to `1_normal` silently.** pl005 shipped
+`evo_sp_break01_maxout`, `evo_sp_break01_out`, `evo_sp_break02_maxout` and `evo_sp_break02_out` —
+but **not `evo_sp_break01_1`**, the only node in the chain that carries `soul_damage`. So evo ran
+base's action, which is why its kikon both looked like base's and paid base's number. Rev had
+`rev_sp_break01_1` and was right all along: same character, same graph, one form resolving and the
+other not is what proves the model.
+
+★ This generalises past the kikon. **Any per-form tuning that appears not to apply is probably
+falling back to `1_normal` because the form's entry does not exist.** Check for `<form>_<node>` in
+the form's category before touching a number. It also means the `2_evo_ct_evo_ct_sp_break*` and
+`3_rev_ct_rev_ct_sp_break01` entries are dead data — Yhwach's, `ct`-category, unreachable from
+pl005's graph — so never read a number off them.
+
+`evo_kikon_soul_v1.py` creates `2_evo_attack_evo_sp_break01_1` as a **verbatim clone** of the base
+action with exactly three changes: category, node, and `soul_damage` 3 → 1. **The motion string
+stays `1_normal\attack\sp_break01_1`**, because that is the clip evo was already playing through
+the fallback — so nothing about the animation, hitboxes, damage or timing moves by a frame, and the
+only observable change is the konpaku number. That is the template for giving a form its own copy of
+anything: clone, rewrite the two identity strings, use `build_padded()` (the length changes), and
+insert with `Pkg.add(..., before=<sibling>)`. ⚠ `d['head']` carries cat/node/motion and has to be
+rebuilt from the new strings — `struct.pack('<I', u32) + cat\0 + node\0 + motion\0 + head[-17:]`,
+checked as a byte-exact round-trip against all 244 shipped pl005 entries before it was used once.
 
 Both tiers of a form get that form's number, so "evo deals 1-2" is true of the sublimation kikon as
 well as the normal one — otherwise evo's *best* kikon would out-damage base's, which inverts the
@@ -3942,9 +4028,206 @@ the same class in the project — see Part 11.
 Uryū's evo aura as the buff's visual (`pl003_ct_evolve` f0–120 of 600 for the motion,
 `P003_cs_trn_evo_00` for the effect; 465 KB / 36 units, so it wants a trimmed private clone).
 pl005's `additional_status_effect.fsv` row is empty, which is the clean route for a
-buff-duration aura. Also outstanding: the grey-out of the SP1 icon during cast and cooldown (pl020
+buff-duration aura. Done since: the grey-out of the SP1 icon during cast and cooldown (pl020
 does this with the node variable `unique_combo`), and a name entry at `skillNamePl005_00`, which is
 free.
+
+
+### The disabled SP1 — icon grey-out and the deny sound
+
+Berg: like pl020. When Aizen casts his SP1 the icon greys out and the input plays the "cannot
+cast" sound, for as long as his guard gauge is draining **and** while it recovers; it comes back
+online only when the gauge is full again. The same principle for Arterie across both the 15 s
+enhanced window and the 20 s lock.
+
+It is copyable, but it took two passes: the first found the input gate and left the icon
+untouched.
+
+#### 0. ★★ The icon is a different system from the input gate — read this first
+
+Everything in §1–§3 below is the **input-rejection** path. It is real and it is what plays the
+deny feedback, but **it is not what greys the icon**, and the first build of this shipped with no
+visible change at all because of that.
+
+The tell was Berg's, and it is the kind of evidence worth more than any amount of disassembly:
+**Yhwach also has a disabled SP1** — locked until a Kaiser level — and **Aizen's SP1 also greys
+during cocoon**. pl052 carries no `unique_combo` anywhere in his `.tcmbpkg`. Two characters, the
+same behaviour, only one of them using that variable: the variable cannot be the mechanism.
+
+The icon state is computed in the battle HUD at `0x1401EE98E`. It walks the combo nodes and
+matches their names against two 8-byte immediates loaded straight into registers — which is why
+no string search finds them:
+
+```
+movabs r9, 0x31306b74615f7073      ; "sp_atk01"
+movabs r8, 0x32306b74615f7073      ; "sp_atk02"
+```
+
+For a match it reads that node's `reiryoku_cost`, scales it, and then **branches on the character
+id**:
+
+```
+mov  rcx, [rdi+0x20]              ; the fighter
+mov  eax, [rcx+0xC00]             ; chara id
+cmp  eax, 0x14                    ; 20 = AIZEN -> bespoke rules
+jne  0x1401EEB83                  ; everyone else -> "can I afford it", and nothing else
+0x1401EEB45  (Aizen)
+  cmp  dword [rcx+0x1094], 2      ; form 2 -> disabled
+  je   0x1401EEB68
+  mov  eax,[rcx+0xFA4]  ; shr 3 ; test al,1 ; jne <enabled>
+  mov  eax,[rcx+0x1098] ; shr 2 ; test al,1 ; jne <enabled>     ; the enhance bitmask
+0x1401EEB68
+  mov  dword [rdi+0x140C], 1      ; <<<< THE ENABLE. Not the disable — see below.
+0x1401EEB83  (everyone else)
+  comiss xmm13, xmm6 ; jb <enabled>
+  cmp  eax, 0x34                  ; 52 = YHWACH -> his own case
+  jne  0x1401EEB68
+```
+
+★★ **`[rdi+0x1408]` and `[rdi+0x140C]` are the two SP icon states, and 2 is GREYED, 1 is LIT.**
+Both are initialised to **2** at `0x1401EE9F6`/`0x1401EEA00`, *before* the node walk, and are
+only ever written on a name match. The proof is Berg's, not the disassembler's: *"the sp2 for
+Zangetsu was also grayed out until we gave him one."* With no `sp_atk02` node the loop never
+matches, the field is never written, and the icon sits at 2. **So the store is the enable, and
+the default is greyed.**
+
+⚠ **The first build of this patch had that polarity backwards.** It jumped to the store, which
+*lit* an icon that was already lit — no crash, no visible change, and nothing in the disassembly
+to suggest an error. A patch that produces exactly no effect is the signature of an inverted
+test. **Read the initialiser before deciding which branch is the "off" one.**
+
+★ **For every ordinary character the icon reflects cost alone.** The HUD never looks at
+`enhance`, `in_powerup`, `kikon_ex` or anything else in the node's condition set — which is
+exactly why Arterie's icon stayed lit while `enhance = -1` had already made the move uncastable.
+Aizen and Yhwach are hardcoded exceptions in this function, and adding pl005 means adding a
+third. **There is no data-driven route to this**, and that is worth knowing before anyone spends
+another session looking for one.
+
+`0x1401EEB36` +0, 15 B is where the chara-id branch begins. The stub re-does it, inserts pl005
+ahead of the Aizen case, and rejoins the shipped code at whichever of its three entry points
+applies:
+
+```
+mov  rcx,[rdi+0x20] ; mov eax,[rcx+0xC00]
+cmp  eax, 5         ; jne .orig
+cmp  dword [rcx+0x1098], 0   ; the enhance BITMASK — non-zero for the buff AND the lock
+jne  -> 0x1401EEB72          ; anything alive -> SKIP the enable, so the icon stays greyed
+.orig:
+cmp  eax, 0x14 ; je -> 0x1401EEB45   ; Aizen, byte for byte what he did before
+jmp  -> 0x1401EEB83                  ; everyone else, and pl005 with nothing active
+```
+
+★ `eax` still carries the chara id on every path out, which `0x1401EEB83` needs for its own
+`cmp eax, 0x34`. `r8`/`r9` still hold the two node-name immediates and are not touched. The ten
+nops end exactly on `0x1401EEB45`, so even a fall-through would land on an instruction boundary.
+
+★★ **Two general lessons, both bought with a wasted test cycle.**
+
+**"Gated" and "shown as gated" are independent systems**, and the second is a per-character
+`switch` in the HUD rather than a rule. When a condition demonstrably works but the UI does not
+reflect it, stop tuning the condition and go find the code that draws the widget.
+
+**A patch that changes nothing at all is usually inverted, not absent.** Both failed builds here
+looked correct in the disassembler and did nothing on screen. The thing that settled it was a
+one-line observation from Berg about a completely different icon — the SP2 that was greyed until
+he had an SP2 — which pinned the default state and therefore the polarity. ★ When a mechanism has
+an initialiser, read it: it tells you which value means "nothing happened", and that is the one
+the game shows when it knows nothing.
+
+
+#### 1. `unique_combo` selects a bespoke predicate — the INPUT path
+
+`unique_combo` is **variables[16]** in a node's `variables` array — the array is positional
+against the `variable` declaration block at the top of the `.tcmbpkg`, 22 entries in this order:
+
+```
+in_stepdash in_powerup cost is_before_hit check_high_area charge_rate enhance reiryoku_cost
+kikon_ex clash_parry_type is_vaild_bomb combo_route_id act_frame_min act_frame_max
+hit_combo_stop guard_combo_stop unique_combo no_reaction_reject chara_combo_id story_combo_id
+atk_syunpo_short_cut sp_over_atk_short_cut
+```
+
+Only two characters in the entire roster use it — pl019 with values 4 and 5, pl020 with
+1,2,3,6,7,8,9,10 — and the two sets never collide, so it is a **global enum of hand-written
+conditions**, not a per-character one. **Aizen's `sp_atk01` carries 8.**
+
+#### 2. `0x1404AC280` dispatches it — and its null branch is a trap
+
+```
+rcx = fighter, rdx = node, r8d = the unique_combo value
+    if ([rcx+0x18C8] == 0) return false;                  <- no per-character handler
+    handler = [rcx+0x18C8];  return handler->vtbl[0x10](…, &node, &value)
+```
+
+⚠ **The null branch returns FALSE — "not usable".** pl005 has no handler object, so simply
+copying `unique_combo = 8` onto Arterie would have made the SP1 **permanently uncastable**,
+not conditionally. Anyone reading the tcmb alone would have shipped that.
+
+#### 3. The feedback is a reason code, and it is gated on Aizen's id
+
+At `0x1404235C2`:
+
+```
+call 0x1404AC280
+test al, al
+jne  <usable>
+mov  rax, [rdi+0x30]
+cmp  dword [rax+0xC00], 0x14        ; chara id 20 — AIZEN ONLY
+jne  0x140423424                    ; everyone else: reject with no feedback at all
+lea  eax, [rbx-1] ; cmp eax,7 ; ja … ; jmp [0x1404247C0 + idx*4]
+mov  dword [rdi+0x5E8], ebx         ; <- the "why you cannot use this" reason code
+```
+
+`[rdi+0x5E8]` is what greys the icon and plays the deny sound. The 8-entry jump table has only
+**two** distinct destinations: `unique_combo` **1,2,3,4,5,8 store the reason; 6 and 7 reject
+silently**. Aizen's SP1 is 8, so 8 is the value that produces exactly the behaviour asked for.
+
+#### 4. What was built
+
+`sp1_lock_ui_v1.py` — two hooks and one data byte. Both sites were chosen because the values are
+already **arguments** there, which is rule 6 and the lesson that cost four builds on the
+fighting-spirit gate.
+
+**`0x1404AC280` +0, 5 B.** The shipped `mov [rsp+0x10], rbx` is stolen whole, which is why the
+stub can `ret` directly — nothing has touched `rsp` yet:
+
+```
+mov  eax, [rcx+0xC00]        ; chara id
+cmp  eax, 5      ; jne .orig
+cmp  r8d, 8      ; jne .orig ; only OUR value, so nothing else changes meaning
+mov  eax, [rcx+0x1098]       ; the enhance BITMASK, not a level
+test eax, eax    ; jne .locked
+mov  al, 1 ; ret             ; nothing active -> SP1 available
+.locked: xor al, al ; ret
+.orig:   mov [rsp+0x10], rbx ; jmp 0x1404AC285
+```
+
+★ **One `test` covers both halves of the brief.** Level 2 (900 frames) is the 15 s buff and
+level 1 (2100 frames) spans the whole 35 s, so the bitmask is non-zero for the buff *and* the
+cooldown and reaches zero exactly when the SP1 comes back online. No timer of our own.
+
+**`0x1404235CB` +0, 17 B** — `mov rax,[rdi+0x30]` / `cmp [rax+0xC00],0x14` / `jne` replaced with
+a `jmp` plus twelve nops that land exactly on `0x1404235DC`. The stub re-does the compare
+admitting id 5 as well, then rejoins either the jump table or the silent-reject path. Id 20 takes
+precisely the branch it took before.
+
+**Data:** `unique_combo` 0 → 8 on pl005's `sp_atk01`, edited in place as text; the array length
+does not change.
+
+★ `sp_atk01` already carried `enhance = -1` — "usable only while NOT in the enhanced state" —
+so casting was already blocked. This patch makes the block *visible*. The two conditions read the
+same state, so they cannot disagree on screen.
+
+★ **Why this is safe on a hot path.** The predicate runs for every character, both players and
+the AI, on every input. The stub answers only for `chara id == 5 AND r8d == 8`; every other case
+executes the stolen instruction and jumps back one instruction later, so it is a literal no-op
+for the rest of the roster. `rcx` is the fighter at all five call sites — the callee dereferences
+`[rcx+0x18C8]` unconditionally, and the shipped code at `0x1404235CF` reads `[fighter+0xC00]` off
+the very object one of those sites passes, so `+0xC00` is inside the same allocation.
+
+Cave `0x1413A3100` (43 B) and `0x1413A3140` (32 B), both verified all-zero first, sitting above
+`fight_gate3`'s window with 0xA0 of slack. Recorded in the release recipe through
+`exe_recipe_sync.py`, whose `OWNERS` table and `.rdata` ledger both name them.
 
 ---
 
@@ -4588,7 +4871,13 @@ simply records whatever differs will happily launder a stray hand edit or a half
 into the release. `exe_recipe_sync.py` goes fatal on an unowned byte instead, which is the only
 reason it is safe to run unattended.
 
-**35. A backup inside a shipped tree ships.** Thirteen `*_bak` files, 3.8 MB, were being copied into
+**35. A form that has no entry of its own silently runs `1_normal`'s.** The combo graph names nodes
+without a form prefix; the engine adds `evo_`/`rev_` and looks in that form's category, and a miss
+falls back to base with no error. Evo's kikon paid base's soul damage for exactly this reason while
+rev, which had its entry, was correct. Before tuning any per-form number, confirm `<form>_<node>`
+exists in that form's category — otherwise you are editing an action the form never runs.
+
+**36. A backup inside a shipped tree ships.** Thirteen `*_bak` files, 3.8 MB, were being copied into
 every player's install. `check_overlay` had never flagged them because the same backups exist in the
 live game, so they compared equal. Compare against what *should* be there, not only against what is.
 
