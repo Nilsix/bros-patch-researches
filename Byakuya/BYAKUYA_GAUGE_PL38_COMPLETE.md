@@ -45,7 +45,10 @@ crash on this feature.
 Switch A decides the layout name, which decides which resource group the
 controller looks in. Resources are keyed by `hash(groupName, logicalName)`, so
 moving switch A repoints Byakuya's whole group and every lookup that still
-expects `UIActionUniquePl022_0` misses → empty handle → crash on SP1.
+expects `UIActionUniquePl022_0` misses → unpopulated handle → crash on SP1.
+(A *cleanly empty* handle is safe — the copy ctor at `0x92790` has a null test for
+exactly that. What crashes is a handle whose control block is stale rather than
+zero; see §7.)
 
 Both tables are indexed by `uiId - 2`. Byakuya's `uiId` is 22, so index 20, so
 **one byte** in each. A neighbouring byte is a different character's entry.
@@ -219,7 +222,8 @@ ui_ActionUniquePl022_0_mdl.cat.pre_gaugebar_bak        93,015 B   the real Byaku
 
 So `ui_pl022_unique_icon00` no longer exists in his resource group. **No exe
 patch can bring it back** — repointing the name from code resolves to nothing,
-which is an empty handle, which is the SP1 crash class.
+which leaves the handle unpopulated, which is the SP1 crash class. Note the
+distinction that §7 turns on: zero is safe, stale is not.
 
 ### Container format
 
@@ -300,10 +304,40 @@ is poisoned. Always restore the game folder before populating an Overlay.
 Both are function entries (each preceded by `CC` padding), which is what makes
 an inline hook safe there: only the ABI argument registers are live.
 
-**The guard** exists because the handle copy constructor is generic and shared by
-the whole game. It nulls out handle pairs that fail a sanity check
-(`[rdx+0x40]` non-canonical, misaligned, or below 0x100000) rather than letting a
-broken handle propagate. It is inert on its own.
+**The guard** exists because `0x92790` is a `shared_ptr` copy constructor, generic
+and shared by the whole game, and the Pl22 -> Pl38 move very occasionally hands it
+a handle whose control block is garbage. Its own empty test reads the control
+block and nothing else:
+
+```
+927C8  mov  [rcx+0x38],0            ; dest starts empty
+927CC  mov  [rcx+0x40],0
+927CE  cmp  qword [rdx+0x40],rax    ; rax==0: source control block null?
+927D4  je   927EA                   ; yes -> copy nothing, return
+927D6  mov  rax,[rdx+0x38]          ; no  -> copy payload
+927DE  mov  rax,[rdx+0x40]          ;        copy control block
+927E6  lock inc dword [rax+0xc]     ; refcount++
+```
+
+So `+0x40` is the control block (refcount at `+0xC`) and `+0x38` is the payload.
+When the source fails a sanity check (`[rdx+0x40]` non-canonical, misaligned, or
+below `0x100000`, or `[rdx+0x38]` null) the guard clears **`+0x40` and only
+`+0x40`**. That makes the engine take its own `je` path: no copy, no refcount
+increment, a well-formed empty handle.
+
+Clearing `+0x38` as well — which the first version did — goes outside that
+contract. It wipes a live object's payload pointer, and the teardown destructor at
+`0x8B0530` then faults at `0x8B06D0` (`lock xadd [rbx+8]`, then `call [rax]` on a
+vtable that is no longer there). The three states are cleanly separable:
+
+| guard | result |
+|---|---|
+| on, `+0x38` and `+0x40` cleared | `0xC0000005` at `0x8B06D0` when leaving a mode |
+| off | `0xC0000005` at `0x927E6`, `lock inc` on a garbage control block, on SP1 |
+| on, `+0x40` only | neither |
+
+The condition is rare — 3 neutralisations in 27 million handle copies — which is
+why it only ever surfaced on SP1 and on leaving a mode, never in normal play.
 
 **The stance driver** filters on `[chara+0xC00] == 0x16` and `[chara+0xC20] < 2`,
 then reads:
