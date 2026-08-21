@@ -187,6 +187,22 @@ Both dirty flags must be re-armed *after* the colour is written, and **every
 frame** — the push consumes them, so a one-shot write is dropped the moment
 anything re-runs.
 
+### The shipped colour
+
+Sakura pink, authored as **RGB(248, 182, 230)**, validated in game 2026-08-21.
+Each channel is `value / 255` as an IEEE-754 float — the push reads R as a raw
+dword and G/B as floats, so all three are stored identically in the element:
+
+| channel | value | float | dword |
+|---|---|---|---|
+| R | 248 | 0.972549 | `0x3F78F8F9` |
+| G | 182 | 0.713725 | `0x3F36B6B7` |
+| B | 230 | 0.901961 | `0x3F66E6E7` |
+| A | 255 | 1.000000 | `0x3F800000` |
+
+Written into **all five** preset slots, then both dirty flags re-armed, every
+frame.
+
 ---
 
 ## 6. The icon art — a data problem, not an exe one
