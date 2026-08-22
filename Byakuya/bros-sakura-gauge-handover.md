@@ -6,6 +6,21 @@ status: bar visible, driven by attacks, no crash — sword-form display unresolv
 related: bros-byakuya-rework-project, bros-gauge-mechanism, ZANGETSU_MASTER_GUIDE
 ---
 
+> **SUPERSEDED IN PART — 2026-08-22.** This document describes the **`Com` `0x17`**
+> configuration. That is no longer what ships. The shipped config is **`Pl38` `0x12`**
+> at `exe+0x21FF64` plus two vtable repoints (`exe+0x143FBC8` -> `exe+0x2089B0`,
+> `exe+0x143FB88` -> `exe+0x207490`).
+>
+> **`BYAKUYA_GAUGE_PL38_COMPLETE.md` in this folder is authoritative** for the class
+> byte, the vtable slots and the handle guard. Everything here about the element
+> layout, the `_cso_` and UI formats, the stance driver and the research history
+> still stands.
+>
+> Two traps if you work from this file: the handle guard must clear `+0x40`
+> **only** (see the correction further down), and the update slot must **never**
+> point at `exe+0x208EC0` -- that corrupts the heap, `0xC0000374` at teardown.
+
+
 # Byakuya Sakura Gauge — handover
 
 `[V]` = byte-verified against the shipping exe or measured in game this session.
@@ -48,6 +63,35 @@ BLEACH_Rebirth_of_Souls.exe+21FF64:
 **Do NOT also patch `exe+21D9A8` (switch A).** See §3.
 
 ### 1.2 SCRIPT 2 — resource-handle guard (required, prevents the SP1 crash)
+
+> ### CORRECTION — 2026-08-22: clear `+0x40` ONLY
+>
+> `exe+0x92790` is a `shared_ptr` copy constructor. `+0x40` is the control block
+> (refcount at `+0xC`), `+0x38` is the payload, and its own empty test reads
+> `+0x40` and nothing else:
+>
+> ```
+> 927CE  cmp qword [rdx+40],rax   ; control block null?
+> 927D4  je  927EA                ; yes -> copy nothing, return
+> 927E6  lock inc dword [rax+0c]  ; refcount++   <-- the SP1 fault
+> ```
+>
+> Clearing `+0x40` makes the engine take its own `je` path: no copy, no refcount
+> increment, a well-formed empty handle. Clearing `+0x38` as well leaves that
+> contract -- it wipes a live payload pointer, and the fault moves to the
+> teardown destructor at `exe+0x8B0530`, faulting at `0x8B06D0`.
+>
+> | guard | result |
+> |---|---|
+> | on, `+0x38` and `+0x40` cleared | `0xC0000005` at `0x8B06D0` **leaving a mode** |
+> | off | `0xC0000005` at `0x927E6` on SP1 |
+> | on, `+0x40` only | neither — shipped in `8a44ba7`, confirmed in game |
+>
+> Note the vocabulary trap elsewhere in these docs: a *cleanly zeroed* handle is
+> the **safe** case. What crashes is a **stale** one.
+>
+> Rarity: 3 neutralisations in 27 million copies.
+
 
 ```
 [ENABLE]
@@ -102,7 +146,8 @@ h_kill:
   mov [r10+18],rax
   mov [r10+20],rdx
   xor rax,rax
-  mov [rdx+38],rax
+  // CONTROL BLOCK ONLY. Clearing [rdx+38] as well crashes when LEAVING a
+  // mode -- see the 2026-08-22 correction below.
   mov [rdx+40],rax
 h_ok:
   popfq
