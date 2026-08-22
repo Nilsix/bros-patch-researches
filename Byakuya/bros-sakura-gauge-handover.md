@@ -81,11 +81,22 @@ BLEACH_Rebirth_of_Souls.exe+21FF64:
 > contract -- it wipes a live payload pointer, and the fault moves to the
 > teardown destructor at `exe+0x8B0530`, faulting at `0x8B06D0`.
 >
-> | guard | result |
+> > **UPDATE — 2026-08-22.** An online match with **Byakuya in both slots** crashed at
+> `exe+0x8B06D0` again, on a client running this fix. So the `+0x40`-only guard
+> made the teardown crash **rarer, not gone**, and the row below overstates it.
+>
+> Two things follow. The mirror match is a configuration that was never tested
+> before shipping. And the guard cannot be the cause of *this* fault: it only ever
+> **skips** a decrement, which leaves a refcount too high — a leak, never a
+> premature free. The `0x8B0530` teardown walks a `weak_ptr` at `this+0x18` and a
+> `shared_ptr` at `this+8`, and the fault is the strong count reaching 0 with the
+> control block already freed. Root cause still open.
+>
+| guard | result |
 > |---|---|
 > | on, `+0x38` and `+0x40` cleared | `0xC0000005` at `0x8B06D0` **leaving a mode** |
 > | off | `0xC0000005` at `0x927E6` on SP1 |
-> | on, `+0x40` only | neither — shipped in `8a44ba7`, confirmed in game |
+> | on, `+0x40` only | neither locally — but see the 2026-08-22 update above |
 >
 > Note the vocabulary trap elsewhere in these docs: a *cleanly zeroed* handle is
 > the **safe** case. What crashes is a **stale** one.

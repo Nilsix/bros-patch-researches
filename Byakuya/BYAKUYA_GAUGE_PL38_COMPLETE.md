@@ -330,11 +330,22 @@ contract. It wipes a live object's payload pointer, and the teardown destructor 
 `0x8B0530` then faults at `0x8B06D0` (`lock xadd [rbx+8]`, then `call [rax]` on a
 vtable that is no longer there). The three states are cleanly separable:
 
+> **UPDATE — 2026-08-22.** An online match with **Byakuya in both slots** crashed at
+> `exe+0x8B06D0` again, on a client running this fix. So the `+0x40`-only guard
+> made the teardown crash **rarer, not gone**, and the row below overstates it.
+>
+> Two things follow. The mirror match is a configuration that was never tested
+> before shipping. And the guard cannot be the cause of *this* fault: it only ever
+> **skips** a decrement, which leaves a refcount too high — a leak, never a
+> premature free. The `0x8B0530` teardown walks a `weak_ptr` at `this+0x18` and a
+> `shared_ptr` at `this+8`, and the fault is the strong count reaching 0 with the
+> control block already freed. Root cause still open.
+>
 | guard | result |
 |---|---|
 | on, `+0x38` and `+0x40` cleared | `0xC0000005` at `0x8B06D0` when leaving a mode |
 | off | `0xC0000005` at `0x927E6`, `lock inc` on a garbage control block, on SP1 |
-| on, `+0x40` only | neither |
+| on, `+0x40` only | neither locally — but see the 2026-08-22 update above |
 
 The condition is rare — 3 neutralisations in 27 million handle copies — which is
 why it only ever surfaced on SP1 and on leaving a mode, never in normal play.
